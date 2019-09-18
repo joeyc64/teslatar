@@ -1,0 +1,5 @@
+#/etc/bin/bash
+sudo cp teslatar.service /etc/systemd/system/teslatar.service
+sudo systemctl enable teslatar.service
+sudo reboot
+
