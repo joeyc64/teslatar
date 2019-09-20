@@ -72,7 +72,7 @@ eingeben. Dann
 	cd dev
 Jetzt die notwendigen Projekte von Github laden. Folgendes eingeben:
 	git clone https://github.com/gglockner/teslajson
-	git clone https://github.com/Joeykarwath/teslatar
+	git clone https://github.com/joeyc64/teslatar
 Dann:
 	cd teslajson
 	sudo /usr/bin/python3 setup.py install
