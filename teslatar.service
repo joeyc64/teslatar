@@ -3,7 +3,7 @@ Description=Teslatar
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 -u teslatar.py
+ExecStart=/usr/bin/python -u teslatar.py
 WorkingDirectory=/home/pi/dev/teslatar
 StandardOutput=inherit
 StandardError=inherit
@@ -12,4 +12,3 @@ User=pi
 
 [Install]
 WantedBy=multi-user.target
-
