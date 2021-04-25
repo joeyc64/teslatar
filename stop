@@ -1,1 +1,1 @@
-sudo systemctl start teslatar.service
+sudo systemctl stop teslatar.service
