@@ -1,7 +1,7 @@
 #
-# Teslatar
-#  
-import teslajson # Tesla API
+# Teslatar 2.0
+#
+import teslapy # Tesla API with new multi-factor authentification
 import sys, time, random, logging, requests
 from datetime import datetime, date, timedelta
 
@@ -10,9 +10,10 @@ username="username@gmail.com"    # Tesla username
 password="teslapassword"   # Tesla password
 home_latitute=48.141356 # configure home address - https://www.latlong.net/convert-address-to-lat-long.html
 home_longitute=8.195409
+
 #
 nWallboxKW = 11 # kW max power of wallbox, change to your wallbox!
-restartHour = 7 # hour when the script will quit AND when car MUST reach end of charge!
+finishHour = 7 # hour when car MUST reach end of charge!
 
 # Calcs hours left from now until finish time
 # Parameters:   then (time in hour when must be finished)
@@ -58,28 +59,28 @@ def isInsidePriceHour( aPrices ):
     return found
 
 # basic vars
-
-
 aChargeMode = []   # time until charge must be finished (-1=start immediate)
 aPricesChosen = []
 
 #logging.basicConfig(format='%(asctime)s - %(message)s', level=logging.DEBUG)
-logging.basicConfig(filename="file.log", format='%(asctime)s - %(message)s', level=logging.DEBUG)
+logging.basicConfig(filename="file.log", format='%(asctime)s - %(message)s', level=logging.INFO)
 logging.critical("Startup Tesla Avatar")
 time.sleep(10)
 
 logging.info("Opening connection to Tesla API...")
 while True:
     try:
-        c = teslajson.Connection(username, password)
+        tesla = teslapy.Tesla( email, password )
+        tesla.fetch_token()
         break
     except:
         logging.error("...could not connect (yet), wait, then try again...", exc_info=True)
         time.sleep(60)
 
+vehicles = tesla.vehicle_list()
 nNumCars = 0
-while nNumCars<len(c.vehicles):
-    v = c.vehicles[nNumCars]
+while nNumCars<len(vehicles):
+    v = vehicles[nNumCars]
     logging.info("Car #%u VIN=%s Name=%s, State=%s", nNumCars+1, v["vin"], v["display_name"], v["state"] )
     nNumCars+=1
 cntExceptions=0    
@@ -95,7 +96,7 @@ lastModeChange=[]
 oldChargeLimitSoc=[]
 i=0
 while i<nNumCars:
-    aChargeMode+=[restartHour]
+    aChargeMode+=[finishHour]
     aPricesChosen+=[0]
     mode+=[0]
     oldMode+=[-1]
@@ -106,13 +107,6 @@ while i<nNumCars:
 
 while True:
 
-    # check if script must be quit 
-    if datetime.now().hour != startHour :
-        startHour = -1
-    if datetime.now().hour == restartHour and startHour==-1 :
-        logging.info("It is %u. Stop the script now", restartHour)
-        sys.exit()   
-
     try:
         
         # new hour? then load new prices from aWATTar
@@ -122,46 +116,57 @@ while True:
             oldPriceHour = datetime.now().hour
          
         # update vehicle structure
-        vehicles=c.get("vehicles")
+        vehicles=tesla.vehicle_list()   # this command does not effect sleep mode of car
         #print( vehicles )
         # check every car
         nCar=0
         info=["state","position","charge mode","idle","charge state"]
         while nCar<nNumCars:
+            #
+            v = vehicles[nCar]
+            #
+            # check if inside a charge hour, if yes then prepare to charge
+            if mode[nCar]==3 : # CHARGE
+                # check if current hour is allowed to CHARGE
+                if isInsidePriceHour(aPricesChosen[nCar]) :
+                    # yes, allowed to charge, then go ONLINE
+                    if v["state"]!="online":
+                        logging.info("Time to charge, wake the car up")
+                        v.sync_wake_up()
+                        lastModeChange[nCar]=0
+                
             # query Tesla API for "state"
-            v = vehicles["response"][nCar]  # this query doesn't affect sleep mode
             info[0]=v["state"]
             if v["state"]!="online":
-                # don't do anything if car is not online (except waking up when charging)
+                # car is not online - let it sleep
                 logging.info("Car#%u state is '%s', mode=%u", nCar+1, v["state"], mode[nCar] )
-                # if car is in charge mode but offline, then wake it up (or first run)
-                if oldMode[nCar]==-1 or (mode[nCar]>=2 and v["state"]!="online") :
-                    logging.info("Car#%u is not online, but needs charging -> wakeup", nCar+1 )
-                    v = c.vehicles[nCar]
-                    v.wake_up()
-                    time.sleep(30)
                 oldMode[nCar]=mode[nCar]
                 lastModeChange[nCar]=0
                 nCar+=1
                 continue
-            # check if vehicle mode didn't change for >15 cycles (15min)
-            if mode[nCar]==0 :
-                lastModeChange[nCar]+=1
-            else:
+                
+            # car is online, check if vehicle mode didn't change for x cycles (15min)
+            if mode[nCar]==3 and isInsidePriceHour(aPricesChosen[nCar]) : # charge hour? don't check for letting sleep
                 lastModeChange[nCar]=0
-            if lastModeChange[nCar]>30 :
+            lastModeChange[nCar]+=1
+            if lastModeChange[nCar]>15 :
                 logging.info("Car#%u seems to be idle, do not poll data anymore -> bring to sleep", nCar+1 ) 
-                if lastModeChange[nCar]>30+30:  # try 30min to let it sleep
+                if lastModeChange[nCar]>15+30:  # try 30min to let it sleep
                     logging.info("Car#%u doesn't go asleep, start polling again", nCar+1 ) 
                     lastModeChange[nCar]=0
                 nCar+=1
                 continue                
-            #
-            v = c.vehicles[nCar]    # this query DOES affect sleep mode and wakes up or keeps it awake
-            ds=v.data_request('drive_state') 
-            if ds["shift_state"]!=None :    # if driving then never try to go asleep, only when parking
-                lastModeChange[nCar]=0  # so reset counter    
-            #logging.info("debug-Car #%u Speed=%s, shift_state=%s", nCar+1, ds["speed"], ds["shift_state"] )
+                
+            # Car needs to be online for getting more data
+            v = vehicles[nCar]
+            if v["state"]!="online":
+                v.sync_wake_up()
+            vd = v.get_vehicle_data()  
+            ds=vd["drive_state"] 
+            if ds["shift_state"]!=None :    # if driving then reset test-for-sleep counter
+                lastModeChange[nCar]=0   
+                nCar+=1
+                continue                
             lati=ds["latitude"] # get position of car
             longi=ds["longitude"]
             if int(lati*1000)!=int(home_latitute*1000) or int(longi*1000)!=int(home_longitute*1000) :
@@ -176,7 +181,7 @@ while True:
                 continue
             info[1]="@home"
             #
-            cs=v.data_request('charge_state')
+            cs=vd['charge_state']
             logging.debug("Loop car #%u, mode=%u", nCar+1, mode[nCar])
             #
             # general check if charge logic should NOT be activated
@@ -192,12 +197,19 @@ while True:
                 info[2]="aWATTar"
                 if cs["charge_limit_soc"]==100 and \
                     cs["charging_state"]!="Charging" :
-                    v.command('charge_start')
+                    v.command('START_CHARGE')
                     info[2]="topup" # finish to 100% now
                     mode[nCar]=0
                     logging.info("CHARGE_LIMIT_SOC is 100 -> start charging now")
-            if cs["charge_port_door_open"]==False and \
-                cs["charge_port_latch"]!="Engaged" :
+                if cs["battery_level"]<10 and \
+                    cs["charging_state"]!="Charging" :
+                    v.command('START_CHARGE')
+                    info[2]="toolow" # always charge if SOC<10% 
+                    mode[nCar]=0
+                    logging.info("STATE_OF_CHARGE<10 -> too low -> start charging now")
+            #if cs["charge_port_door_open"]==False and \
+            #    cs["charge_port_latch"]!="Engaged" :
+            if cs["charge_port_door_open"]==False:
                 # no charge cable - reset everything 
                 mode[nCar]=0
                 if mode[nCar]!=oldMode[nCar] :
@@ -218,7 +230,7 @@ while True:
                 else:
                     # if still not charging then start charging again
                     if cs["charging_state"]!="Charging" :
-                        v.command('charge_start')
+                        v.command('START_CHARGE')
                         logging.info("send cmd: start charging")
                     else:
                         # now it's charging! 
@@ -226,15 +238,16 @@ while True:
                         timeToFull[nCar]=0
                         i=10
                         while( i>0 ):
-                            if( cs["charger_power"]<nWallboxKW ) : # wait until on full power, so that extimated time is exact
-                                logging.debug("...charging but not on full power yet - waiting...")
+                            if( cs["charger_power"]<(nWallboxKW-nWallboxKW/10) ) : # wait until on full power, so that extimated time is exact
+                                logging.info("...charging but not on full power yet (%s) - waiting...", cs["charger_power"])
                             else:
                                 if( timeToFull[nCar]!=0 and timeToFull[nCar]==cs["time_to_full_charge"] ): # is it stable (same for a period)
                                     break    
                                 timeToFull[nCar] = cs["time_to_full_charge"]
-                                logging.debug("time_to_full_charge = %s",cs["time_to_full_charge"])   # 4.33 for 4h20m
-                            time.sleep(10)                            
-                            cs=v.data_request('charge_state')    
+                                logging.info("time_to_full_charge = %s",cs["time_to_full_charge"])   # 4.33 for 4h20m
+                            time.sleep(10) 
+                            vd = v.get_vehicle_data()
+                            cs=vd["charge_state"]
                             i=i-1
                         # ok?
                         if( i>0 ):
@@ -287,7 +300,7 @@ while True:
                     # yes, allowed to charge
                     if cs["charging_state"]!="Charging" :
                         if cs["battery_level"]<cs["charge_limit_soc"] : # only start charging if SOC is below MAX
-                            v.command('charge_start')
+                            v.command('START_CHARGE')
                             logging.info("Start charging command")
                         else: # is at max, so it's finished, stop the CHARGE logic
                             logging.info("Charge finished")
@@ -295,7 +308,7 @@ while True:
                 else:
                     # no, not allowed to charge 
                     if cs["charging_state"]=="Charging" :
-                        v.command('charge_stop')
+                        v.command('STOP_CHARGE')
                         logging.info("Stop charging command")
             #
             # info=["state","position","charge mode","ctrl-mode","charge state"]
@@ -312,6 +325,7 @@ while True:
         logging.info("**")
         time.sleep(60)
     except :
+        # exceptions happen all the time when Tesla server are busy, so no big deal, just wait a while and try again
         cntExceptions+=1
         logging.error("******EXCEPTION #%u", cntExceptions )
         logging.error( "%s, %s", sys.exc_info()[0], sys.exc_info()[1] )
@@ -319,7 +333,8 @@ while True:
         logging.info("RE-Opening connection to Tesla API...")
         while True:
             try:
-                c = teslajson.Connection(username, password)
+                tesla = teslapy.Tesla( email, password )
+                tesla.fetch_token()           
                 time.sleep(30)
                 break
             except:
