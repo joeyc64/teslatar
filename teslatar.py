@@ -6,7 +6,7 @@ import sys, time, random, logging, requests
 from datetime import datetime, date, timedelta
 
 # 
-username="username@gmail.com"    # Tesla username
+email="username@gmail.com"    # Tesla username
 password="teslapassword"   # Tesla password
 home_latitute=48.141356 # configure home address - https://www.latlong.net/convert-address-to-lat-long.html
 home_longitute=8.195409
